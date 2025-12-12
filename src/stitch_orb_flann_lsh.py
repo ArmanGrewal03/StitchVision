@@ -1,9 +1,13 @@
 """
-Panorama Stitching using SIFT Feature Detection and Brute-Force Matching
-=========================================================================
+Panorama Stitching using ORB Feature Detection and FLANN-based Matching with LSH
+=================================================================================
 This script stitches two images (src_left.jpg and src_right.jpg) into a panorama
-using SIFT feature detection, Brute-Force matching with L2 norm distance, and
-homography-based warping.
+using ORB feature detection, FLANN matching with LSH (Locality-Sensitive Hashing)
+for binary descriptors, and homography-based warping.
+
+KEY DIFFERENCE from BF version: Uses FLANN with LSH index instead of Brute-Force
+matcher. FLANN is faster for large descriptor sets due to approximate nearest
+neighbor search using hashing.
 """
 
 import cv2
@@ -12,9 +16,10 @@ import os
 import sys
 
 
-def detect_sift_features(image, nfeatures=4000):
+def detect_orb(image, nfeatures=4000):
     """
-    Detect and compute SIFT features from an image.
+    Detect and compute ORB features from an image.
+    (Same as BF version - no changes)
     
     Args:
         image: Input image (grayscale or BGR)
@@ -24,55 +29,121 @@ def detect_sift_features(image, nfeatures=4000):
         kp: List of keypoints
         des: Descriptor array (None if no features found)
     """
-    sift = cv2.SIFT_create(nfeatures=nfeatures)
-    kp, des = sift.detectAndCompute(image, None)
+    orb = cv2.ORB_create(nfeatures=nfeatures)
+    kp, des = orb.detectAndCompute(image, None)
     
     if des is None:
         print(f"Warning: No features detected in image")
         return kp, None
     
+    # Ensure descriptors are uint8 (required for FLANN LSH)
+    # ORB already returns uint8, but we assert/cast to be safe
+    if des.dtype != np.uint8:
+        print(f"Warning: Descriptors are {des.dtype}, converting to uint8")
+        des = des.astype(np.uint8)
+    
     return kp, des
 
 
-def match_features_bf(des_left, des_right, ratio_threshold=0.75):
+def match_flann_lsh(des_left, des_right, ratio_threshold=0.75, min_matches=10):
     """
-    Match descriptors using Brute-Force matcher with L2 norm distance.
-    Uses knnMatch with k=2 and applies Lowe's ratio test.
+    Match descriptors using FLANN matcher with LSH (Locality-Sensitive Hashing).
+    
+    KEY CHANGE from BF version: Uses cv2.FlannBasedMatcher with LSH index params
+    instead of cv2.BFMatcher. FLANN uses approximate nearest neighbor search,
+    which is faster for large descriptor sets.
     
     Args:
-        des_left: Descriptors from left image
-        des_right: Descriptors from right image
-        ratio_threshold: Lowe's ratio test threshold (default: 0.75, same as ORB code)
+        des_left: Descriptors from left image (must be uint8)
+        des_right: Descriptors from right image (must be uint8)
+        ratio_threshold: Lowe's ratio test threshold (default: 0.75)
+        min_matches: Minimum number of matches required (default: 10)
         
     Returns:
         good_matches: List of good matches (DMatch objects) after ratio test
-        knn_matches: Raw knnMatch results for visualization
     """
-    # Create BFMatcher with L2 norm (for SIFT descriptors)
-    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
+    # Ensure descriptors are uint8 (required for FLANN LSH)
+    if des_left.dtype != np.uint8:
+        des_left = des_left.astype(np.uint8)
+    if des_right.dtype != np.uint8:
+        des_right = des_right.astype(np.uint8)
     
-    # Perform knnMatch with k=2
-    knn_matches = bf.knnMatch(des_left, des_right, k=2)
+    # FLANN parameters for ORB binary descriptors (LSH index)
+    # FLANN_INDEX_LSH = 6 for binary descriptors like ORB
+    FLANN_INDEX_LSH = 6
+    index_params = dict(
+        algorithm=FLANN_INDEX_LSH,
+        table_number=12,      # Number of hash tables (typical range: 6-20)
+        key_size=20,          # Size of hash key (typical range: 10-30)
+        multi_probe_level=2   # Multi-probe level for better accuracy (range: 1-2)
+    )
+    search_params = dict(checks=50)  # Number of times tree is traversed (higher = more accurate but slower)
     
-    # Apply Lowe's ratio test (same threshold as ORB code: 0.75)
-    good_matches = []
-    for match_pair in knn_matches:
-        if len(match_pair) == 2:
-            m, n = match_pair
-            # Keep match if distance is significantly smaller than second best
-            if m.distance < ratio_threshold * n.distance:
-                good_matches.append(m)
+    # Initialize FLANN matcher with LSH parameters
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
     
-    print(f"Found {len(good_matches)} good matches using BFMatcher (L2) + ratio test (threshold={ratio_threshold})")
-    print(f"Total matches before filtering: {len(knn_matches)}")
+    try:
+        # Use knnMatch with k=2 for Lowe's ratio test
+        knn_matches = flann.knnMatch(des_left, des_right, k=2)
+        
+        # Apply Lowe's ratio test to filter good matches
+        good_matches = []
+        for match_pair in knn_matches:
+            if len(match_pair) == 2:
+                m, n = match_pair
+                # Keep match if distance is significantly smaller than second best
+                if m.distance < ratio_threshold * n.distance:
+                    good_matches.append(m)
+        
+        # If we have enough matches, return them
+        if len(good_matches) >= min_matches:
+            print(f"Found {len(good_matches)} good matches using FLANN (LSH) + ratio test (threshold={ratio_threshold})")
+            return good_matches
+        
+        print(f"Only {len(good_matches)} matches found with ratio={ratio_threshold}. Trying relaxed threshold...")
+        
+        # Fallback: Try slightly higher ratio threshold (0.8-0.85) if too few matches
+        if ratio_threshold < 0.85:
+            relaxed_threshold = min(0.85, ratio_threshold + 0.05)
+            good_matches = []
+            for match_pair in knn_matches:
+                if len(match_pair) == 2:
+                    m, n = match_pair
+                    if m.distance < relaxed_threshold * n.distance:
+                        good_matches.append(m)
+            
+            if len(good_matches) >= min_matches:
+                print(f"Found {len(good_matches)} matches using relaxed ratio threshold={relaxed_threshold}")
+                return good_matches
+        
+        # If still too few, try increasing search checks
+        if len(good_matches) < min_matches:
+            print(f"Still only {len(good_matches)} matches. Trying increased search checks...")
+            search_params_increased = dict(checks=100)  # Increase from 50 to 100
+            flann_increased = cv2.FlannBasedMatcher(index_params, search_params_increased)
+            knn_matches = flann_increased.knnMatch(des_left, des_right, k=2)
+            
+            good_matches = []
+            for match_pair in knn_matches:
+                if len(match_pair) == 2:
+                    m, n = match_pair
+                    if m.distance < ratio_threshold * n.distance:
+                        good_matches.append(m)
+            
+            print(f"After increased checks: Found {len(good_matches)} matches")
+            return good_matches
+        
+    except cv2.error as e:
+        print(f"FLANN matching failed: {e}")
+        raise
     
-    return good_matches, knn_matches
+    return good_matches
 
 
 def compute_homography(kp_left, kp_right, matches, ransac_threshold=5.0):
     """
     Compute homography matrix using RANSAC.
-    (Same logic as ORB versions)
+    (Same as BF version - no changes)
     
     Args:
         kp_left: Keypoints from left image
@@ -118,7 +189,7 @@ def compute_homography(kp_left, kp_right, matches, ransac_threshold=5.0):
 def warp_and_compose(left, right, H, blend=True):
     """
     Warp the right image and compose with the left image.
-    (Same logic as ORB versions)
+    (Same as BF version - no changes)
     
     Args:
         left: Left image
@@ -179,7 +250,7 @@ def warp_and_compose(left, right, H, blend=True):
 def auto_crop(image):
     """
     Automatically crop black borders from the stitched image.
-    (Same logic as ORB versions)
+    (Same as BF version - no changes)
     
     Finds the bounding box of non-black pixels and crops to that region.
     
@@ -222,6 +293,7 @@ def auto_crop(image):
 def draw_keypoints(image, keypoints):
     """
     Draw keypoints on an image for visualization.
+    (Same as BF version - no changes)
     
     Args:
         image: Input image
@@ -238,9 +310,10 @@ def draw_keypoints(image, keypoints):
     return vis
 
 
-def draw_matches_simple(left, kp_left, right, kp_right, matches, max_matches=50):
+def draw_matches(left, kp_left, right, kp_right, matches, max_matches=50):
     """
     Draw matches between two images for visualization.
+    (Same as BF version - no changes)
     
     Args:
         left: Left image
@@ -266,48 +339,10 @@ def draw_matches_simple(left, kp_left, right, kp_right, matches, max_matches=50)
     return vis
 
 
-def draw_matches_knn(left, kp_left, right, kp_right, knn_matches, ratio_threshold=0.75, max_matches=50):
-    """
-    Draw matches using cv.drawMatchesKnn after applying ratio test.
-    
-    Args:
-        left: Left image
-        kp_left: Left keypoints
-        right: Right image
-        kp_right: Right keypoints
-        knn_matches: Raw knnMatch results
-        ratio_threshold: Ratio test threshold to filter matches
-        max_matches: Maximum number of matches to draw
-        
-    Returns:
-        vis: Visualization image with matches drawn
-    """
-    # Filter knn_matches with ratio test for visualization
-    filtered_knn_matches = []
-    for match_pair in knn_matches:
-        if len(match_pair) == 2:
-            m, n = match_pair
-            if m.distance < ratio_threshold * n.distance:
-                filtered_knn_matches.append([m])
-                if len(filtered_knn_matches) >= max_matches:
-                    break
-    
-    # Draw matches using drawMatchesKnn
-    vis = cv2.drawMatchesKnn(
-        left, kp_left,
-        right, kp_right,
-        filtered_knn_matches,
-        None,
-        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
-    )
-    
-    return vis
-
-
-def save_visualizations(left, right, kp_left, kp_right, matches, warped, result, cropped):
+def save_visualizations(left, right, kp_left, kp_right, matches, warped, result, cropped, output_dir):
     """
     Save intermediate and final results as separate PNG files.
-    (Same as ORB versions - saves as separate PNGs)
+    (Same as BF version - saves as separate PNGs instead of matplotlib figure)
     
     Args:
         left: Left input image
@@ -318,51 +353,57 @@ def save_visualizations(left, right, kp_left, kp_right, matches, warped, result,
         warped: Warped right image
         result: Stitched result before cropping
         cropped: Final cropped result
+        output_dir: Directory where results will be saved
     """
     # Left image with keypoints
     left_kp = draw_keypoints(left, kp_left)
-    cv2.imwrite("01_left_keypoints.png", left_kp)
+    cv2.imwrite(os.path.join(output_dir, "01_left_keypoints.png"), left_kp)
     print(f"Saved: 01_left_keypoints.png ({len(kp_left)} keypoints)")
     
     # Right image with keypoints
     right_kp = draw_keypoints(right, kp_right)
-    cv2.imwrite("02_right_keypoints.png", right_kp)
+    cv2.imwrite(os.path.join(output_dir, "02_right_keypoints.png"), right_kp)
     print(f"Saved: 02_right_keypoints.png ({len(kp_right)} keypoints)")
     
     # Matches
-    matches_vis = draw_matches_simple(left, kp_left, right, kp_right, matches, max_matches=50)
-    cv2.imwrite("03_matches.png", matches_vis)
+    matches_vis = draw_matches(left, kp_left, right, kp_right, matches, max_matches=50)
+    cv2.imwrite(os.path.join(output_dir, "03_matches.png"), matches_vis)
     print(f"Saved: 03_matches.png ({len(matches)} good matches)")
     
     # Warped right image
-    cv2.imwrite("04_warped_right.png", warped)
+    cv2.imwrite(os.path.join(output_dir, "04_warped_right.png"), warped)
     print("Saved: 04_warped_right.png")
     
     # Stitched result (before cropping)
-    cv2.imwrite("05_stitched_before_crop.png", result)
+    cv2.imwrite(os.path.join(output_dir, "05_stitched_before_crop.png"), result)
     print("Saved: 05_stitched_before_crop.png")
     
     # Final cropped result
-    cv2.imwrite("06_final_panorama.png", cropped)
+    cv2.imwrite(os.path.join(output_dir, "06_final_panorama.png"), cropped)
     print("Saved: 06_final_panorama.png")
 
 
 def main():
     """
-    Main function to execute panorama stitching pipeline using SIFT features and BF matching.
+    Main function to execute panorama stitching pipeline using FLANN (LSH) matching.
     
     Pipeline:
     1. Load images (src_left.jpg, src_right.jpg)
-    2. Detect SIFT features
-    3. Match features using BFMatcher with L2 norm
+    2. Detect ORB features
+    3. Match features using FLANN with LSH
     4. Compute homography with RANSAC
     5. Warp and compose images
     6. Auto-crop black borders
     7. Save results and visualizations
     """
+    # Output directory outside the src folder: ../results
+    output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results/stitch_orb_flann_lsh"))
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Saving results to: {output_dir}")
+    
     # Image file paths
-    left_path = "src_left.jpg"
-    right_path = "src_right.jpg"
+    left_path = "../original_images/src_left.jpg"
+    right_path = "../original_images/src_right.jpg"
     
     # Check if images exist
     if not os.path.exists(left_path):
@@ -389,30 +430,29 @@ def main():
     print(f"Left image shape: {left.shape}")
     print(f"Right image shape: {right.shape}")
     
-    # Detect SIFT features
-    print("\nDetecting SIFT features...")
-    kp_left, des_left = detect_sift_features(left, nfeatures=4000)
-    kp_right, des_right = detect_sift_features(right, nfeatures=4000)
+    # Detect ORB features (same as BF version)
+    print("\nDetecting ORB features...")
+    kp_left, des_left = detect_orb(left, nfeatures=4000)
+    kp_right, des_right = detect_orb(right, nfeatures=4000)
     
     if des_left is None or des_right is None:
         print("Error: Failed to detect features in one or both images")
         sys.exit(1)
     
-    print(f"Left: {len(kp_left)} keypoints, descriptors shape: {des_left.shape}")
-    print(f"Right: {len(kp_right)} keypoints, descriptors shape: {des_right.shape}")
+    print(f"Left: {len(kp_left)} keypoints, descriptors shape: {des_left.shape}, dtype: {des_left.dtype}")
+    print(f"Right: {len(kp_right)} keypoints, descriptors shape: {des_right.shape}, dtype: {des_right.dtype}")
     
-    # Match features using BFMatcher with L2 norm (same ratio threshold as ORB: 0.75)
-    print("\nMatching features using BFMatcher (L2 norm)...")
-    ratio_threshold = 0.75  # Same as ORB code
-    good_matches, knn_matches = match_features_bf(des_left, des_right, ratio_threshold=ratio_threshold)
+    # Match features using FLANN with LSH (KEY DIFFERENCE from BF version)
+    print("\nMatching features using FLANN (LSH)...")
+    matches = match_flann_lsh(des_left, des_right, ratio_threshold=0.75, min_matches=10)
     
-    if len(good_matches) < 4:
-        print(f"Error: Too few matches ({len(good_matches)}). Need at least 4 for homography.")
+    if len(matches) < 4:
+        print(f"Error: Too few matches ({len(matches)}). Need at least 4 for homography.")
         sys.exit(1)
     
-    # Compute homography with RANSAC (same logic as ORB versions)
+    # Compute homography with RANSAC (same as BF version)
     print("\nComputing homography with RANSAC...")
-    H, mask, inlier_count = compute_homography(kp_left, kp_right, good_matches, ransac_threshold=5.0)
+    H, mask, inlier_count = compute_homography(kp_left, kp_right, matches, ransac_threshold=5.0)
     
     if H is None:
         print("Error: Homography computation failed")
@@ -420,7 +460,7 @@ def main():
     
     print(f"Homography matrix:\n{H}")
     
-    # Warp and compose images (same logic as ORB versions)
+    # Warp and compose images (same as BF version)
     print("\nWarping and compositing images...")
     h_right, w_right = right.shape[:2]
     canvas_w = left.shape[1] + w_right
@@ -429,28 +469,26 @@ def main():
     warped = cv2.warpPerspective(right, H, (canvas_w, canvas_h))
     result = warp_and_compose(left, right, H, blend=True)
     
-    # Auto-crop black borders (same logic as ORB versions)
+    # Auto-crop black borders (same as BF version)
     print("\nAuto-cropping black borders...")
     cropped = auto_crop(result)
     
     # Save final result
-    output_path = "panorama_result_sift.jpg"
+    output_path = os.path.join(output_dir, "panorama_result_flann.jpg")
     cv2.imwrite(output_path, cropped)
     print(f"\nPanorama saved to {output_path}")
     
-    # Save visualizations as separate PNG files (same as ORB versions)
+    # Save visualizations as separate PNG files (same as BF version)
     print("\nSaving visualizations as separate PNG files...")
-    save_visualizations(left, right, kp_left, kp_right, good_matches, warped, result, cropped)
+    save_visualizations(left, right, kp_left, kp_right, matches, warped, result, cropped, output_dir)
     
     print("\nPanorama stitching completed successfully!")
     print("\nSummary:")
-    print(f"  - Feature detector: SIFT (vs ORB in other versions)")
-    print(f"  - Matcher: BFMatcher with L2 norm")
+    print(f"  - Matcher: FLANN with LSH index (vs Brute-Force in BF version)")
     print(f"  - Keypoints detected: Left={len(kp_left)}, Right={len(kp_right)}")
-    print(f"  - Matches found: {len(good_matches)}")
+    print(f"  - Matches found: {len(matches)}")
     print(f"  - Inliers: {inlier_count}")
 
 
 if __name__ == "__main__":
     main()
-

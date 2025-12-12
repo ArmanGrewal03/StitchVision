@@ -1,9 +1,9 @@
 """
-Panorama Stitching using SIFT Feature Detection and FLANN-based Matching
+Panorama Stitching using SIFT Feature Detection and Brute-Force Matching
 =========================================================================
 This script stitches two images (src_left.jpg and src_right.jpg) into a panorama
-using SIFT feature detection, FLANN matching with KD-tree (for SIFT descriptors),
-and homography-based warping.
+using SIFT feature detection, Brute-Force matching with L2 norm distance, and
+homography-based warping.
 """
 
 import cv2
@@ -34,54 +34,45 @@ def detect_sift_features(image, nfeatures=4000):
     return kp, des
 
 
-def match_features_flann(des_left, des_right, ratio_threshold=0.75):
+def match_features_bf(des_left, des_right, ratio_threshold=0.75):
     """
-    Match descriptors using FLANN matcher with KD-tree (for SIFT descriptors).
+    Match descriptors using Brute-Force matcher with L2 norm distance.
     Uses knnMatch with k=2 and applies Lowe's ratio test.
     
     Args:
         des_left: Descriptors from left image
         des_right: Descriptors from right image
-        ratio_threshold: Lowe's ratio test threshold (default: 0.75)
+        ratio_threshold: Lowe's ratio test threshold (default: 0.75, same as ORB code)
         
     Returns:
         good_matches: List of good matches (DMatch objects) after ratio test
         knn_matches: Raw knnMatch results for visualization
     """
-    # FLANN parameters for SIFT descriptors (KD-tree)
-    # algorithm=1 is FLANN_INDEX_KDTREE for float descriptors like SIFT
-    index_params = dict(algorithm=1, trees=5)
-    search_params = dict(checks=50)  # Number of times tree is traversed
+    # Create BFMatcher with L2 norm (for SIFT descriptors)
+    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)
     
-    # Initialize FLANN matcher with KD-tree parameters
-    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    # Perform knnMatch with k=2
+    knn_matches = bf.knnMatch(des_left, des_right, k=2)
     
-    try:
-        # Use knnMatch with k=2 for Lowe's ratio test
-        knn_matches = flann.knnMatch(des_left, des_right, k=2)
-        
-        # Apply Lowe's ratio test to filter good matches
-        good_matches = []
-        for match_pair in knn_matches:
-            if len(match_pair) == 2:
-                m, n = match_pair
-                # Keep match if distance is significantly smaller than second best
-                if m.distance < ratio_threshold * n.distance:
-                    good_matches.append(m)
-        
-        print(f"Found {len(good_matches)} good matches using FLANN (KD-tree) + ratio test (threshold={ratio_threshold})")
-        print(f"Total matches before filtering: {len(knn_matches)}")
-        
-        return good_matches, knn_matches
-        
-    except cv2.error as e:
-        print(f"FLANN matching failed: {e}")
-        raise
+    # Apply Lowe's ratio test (same threshold as ORB code: 0.75)
+    good_matches = []
+    for match_pair in knn_matches:
+        if len(match_pair) == 2:
+            m, n = match_pair
+            # Keep match if distance is significantly smaller than second best
+            if m.distance < ratio_threshold * n.distance:
+                good_matches.append(m)
+    
+    print(f"Found {len(good_matches)} good matches using BFMatcher (L2) + ratio test (threshold={ratio_threshold})")
+    print(f"Total matches before filtering: {len(knn_matches)}")
+    
+    return good_matches, knn_matches
 
 
 def compute_homography(kp_left, kp_right, matches, ransac_threshold=5.0):
     """
     Compute homography matrix using RANSAC.
+    (Same logic as ORB versions)
     
     Args:
         kp_left: Keypoints from left image
@@ -99,16 +90,14 @@ def compute_homography(kp_left, kp_right, matches, ransac_threshold=5.0):
         return None, None, 0
     
     # Extract matching points from keypoints using match indices
-    # src_pts: right image points, dst_pts: left image points
-    # We want to warp right image onto left image's plane
-    src_pts = np.float32([kp_right[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
-    dst_pts = np.float32([kp_left[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
+    left_pts = np.float32([kp_left[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
+    right_pts = np.float32([kp_right[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
     
     # Compute homography using RANSAC for robust estimation
-    # Maps src_pts (right) -> dst_pts (left)
+    # Maps right_pts -> left_pts (warping right image to left image's frame)
     H, mask = cv2.findHomography(
-        src_pts, dst_pts,
-        cv2.RANSAC,
+        right_pts, left_pts, 
+        cv2.RANSAC, 
         ransac_threshold
     )
     
@@ -129,10 +118,11 @@ def compute_homography(kp_left, kp_right, matches, ransac_threshold=5.0):
 def warp_and_compose(left, right, H, blend=True):
     """
     Warp the right image and compose with the left image.
+    (Same logic as ORB versions)
     
     Args:
-        left: Left image (destination/first image)
-        right: Right image (source/second image to warp)
+        left: Left image
+        right: Right image
         H: Homography matrix (3x3) mapping right -> left
         blend: Whether to apply feathering blend in overlap region
         
@@ -146,7 +136,7 @@ def warp_and_compose(left, right, H, blend=True):
     canvas_w = w_left + w_right
     canvas_h = max(h_left, h_right)
     
-    # Warp the right image into the left image's plane using homography
+    # Warp the right image into the left image's frame using homography
     warped_right = cv2.warpPerspective(right, H, (canvas_w, canvas_h))
     
     # Create result canvas - start with warped right image
@@ -189,6 +179,9 @@ def warp_and_compose(left, right, H, blend=True):
 def auto_crop(image):
     """
     Automatically crop black borders from the stitched image.
+    (Same logic as ORB versions)
+    
+    Finds the bounding box of non-black pixels and crops to that region.
     
     Args:
         image: Input image with potential black borders
@@ -245,7 +238,7 @@ def draw_keypoints(image, keypoints):
     return vis
 
 
-def draw_matches_visualization(left, kp_left, right, kp_right, matches, max_matches=50):
+def draw_matches_simple(left, kp_left, right, kp_right, matches, max_matches=50):
     """
     Draw matches between two images for visualization.
     
@@ -273,10 +266,48 @@ def draw_matches_visualization(left, kp_left, right, kp_right, matches, max_matc
     return vis
 
 
-def save_visualizations(left, right, kp_left, kp_right, matches, warped, result, cropped):
+def draw_matches_knn(left, kp_left, right, kp_right, knn_matches, ratio_threshold=0.75, max_matches=50):
+    """
+    Draw matches using cv.drawMatchesKnn after applying ratio test.
+    
+    Args:
+        left: Left image
+        kp_left: Left keypoints
+        right: Right image
+        kp_right: Right keypoints
+        knn_matches: Raw knnMatch results
+        ratio_threshold: Ratio test threshold to filter matches
+        max_matches: Maximum number of matches to draw
+        
+    Returns:
+        vis: Visualization image with matches drawn
+    """
+    # Filter knn_matches with ratio test for visualization
+    filtered_knn_matches = []
+    for match_pair in knn_matches:
+        if len(match_pair) == 2:
+            m, n = match_pair
+            if m.distance < ratio_threshold * n.distance:
+                filtered_knn_matches.append([m])
+                if len(filtered_knn_matches) >= max_matches:
+                    break
+    
+    # Draw matches using drawMatchesKnn
+    vis = cv2.drawMatchesKnn(
+        left, kp_left,
+        right, kp_right,
+        filtered_knn_matches,
+        None,
+        flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS
+    )
+    
+    return vis
+
+
+def save_visualizations(left, right, kp_left, kp_right, matches, warped, result, cropped, output_dir):
     """
     Save intermediate and final results as separate PNG files.
-    (Same format as other configurations)
+    (Same as ORB versions - saves as separate PNGs)
     
     Args:
         left: Left input image
@@ -287,51 +318,57 @@ def save_visualizations(left, right, kp_left, kp_right, matches, warped, result,
         warped: Warped right image
         result: Stitched result before cropping
         cropped: Final cropped result
+        output_dir: Directory where results will be saved
     """
     # Left image with keypoints
     left_kp = draw_keypoints(left, kp_left)
-    cv2.imwrite("01_left_keypoints.png", left_kp)
+    cv2.imwrite(os.path.join(output_dir, "01_left_keypoints.png"), left_kp)
     print(f"Saved: 01_left_keypoints.png ({len(kp_left)} keypoints)")
     
     # Right image with keypoints
     right_kp = draw_keypoints(right, kp_right)
-    cv2.imwrite("02_right_keypoints.png", right_kp)
+    cv2.imwrite(os.path.join(output_dir, "02_right_keypoints.png"), right_kp)
     print(f"Saved: 02_right_keypoints.png ({len(kp_right)} keypoints)")
     
     # Matches
-    matches_vis = draw_matches_visualization(left, kp_left, right, kp_right, matches, max_matches=50)
-    cv2.imwrite("03_matches.png", matches_vis)
+    matches_vis = draw_matches_simple(left, kp_left, right, kp_right, matches, max_matches=50)
+    cv2.imwrite(os.path.join(output_dir, "03_matches.png"), matches_vis)
     print(f"Saved: 03_matches.png ({len(matches)} good matches)")
     
     # Warped right image
-    cv2.imwrite("04_warped_right.png", warped)
+    cv2.imwrite(os.path.join(output_dir, "04_warped_right.png"), warped)
     print("Saved: 04_warped_right.png")
     
     # Stitched result (before cropping)
-    cv2.imwrite("05_stitched_before_crop.png", result)
+    cv2.imwrite(os.path.join(output_dir, "05_stitched_before_crop.png"), result)
     print("Saved: 05_stitched_before_crop.png")
     
     # Final cropped result
-    cv2.imwrite("06_final_panorama.png", cropped)
+    cv2.imwrite(os.path.join(output_dir, "06_final_panorama.png"), cropped)
     print("Saved: 06_final_panorama.png")
 
 
 def main():
     """
-    Main function to execute panorama stitching pipeline using SIFT features and FLANN matching.
+    Main function to execute panorama stitching pipeline using SIFT features and BF matching.
     
     Pipeline:
-    1. Load images (src_left.jpg, src_right.jpg) in left → right order
+    1. Load images (src_left.jpg, src_right.jpg)
     2. Detect SIFT features
-    3. Match features using FLANN with KD-tree
+    3. Match features using BFMatcher with L2 norm
     4. Compute homography with RANSAC
     5. Warp and compose images
     6. Auto-crop black borders
-    7. Save final panoramic result
+    7. Save results and visualizations
     """
-    # Image file paths (left → right order)
-    left_path = "src_left.jpg"
-    right_path = "src_right.jpg"
+    # Output directory outside the src folder: ../results
+    output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "results/stitch_sift_bf"))
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Saving results to: {output_dir}")
+    
+    # Image file paths
+    left_path = "../original_images/src_left.jpg"
+    right_path = "../original_images/src_right.jpg"
     
     # Check if images exist
     if not os.path.exists(left_path):
@@ -344,8 +381,8 @@ def main():
     
     # Load images
     print("Loading images...")
-    left = cv2.imread(left_path)  # First image (destination)
-    right = cv2.imread(right_path)  # Second image (source, will be warped)
+    left = cv2.imread(left_path)
+    right = cv2.imread(right_path)
     
     if left is None:
         print(f"Error: Could not load {left_path}")
@@ -370,21 +407,16 @@ def main():
     print(f"Left: {len(kp_left)} keypoints, descriptors shape: {des_left.shape}")
     print(f"Right: {len(kp_right)} keypoints, descriptors shape: {des_right.shape}")
     
-    # Match features using FLANN with KD-tree (for SIFT float descriptors)
-    print("\nMatching features using FLANN (KD-tree)...")
-    ratio_threshold = 0.75  # Lowe's ratio test threshold
-    good_matches, knn_matches = match_features_flann(des_left, des_right, ratio_threshold=ratio_threshold)
+    # Match features using BFMatcher with L2 norm (same ratio threshold as ORB: 0.75)
+    print("\nMatching features using BFMatcher (L2 norm)...")
+    ratio_threshold = 0.75  # Same as ORB code
+    good_matches, knn_matches = match_features_bf(des_left, des_right, ratio_threshold=ratio_threshold)
     
     if len(good_matches) < 4:
         print(f"Error: Too few matches ({len(good_matches)}). Need at least 4 for homography.")
         sys.exit(1)
     
-    # Extract corresponding matched keypoint coordinates
-    # src_pts from right image, dst_pts from left image
-    src_pts = np.float32([kp_right[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-    dst_pts = np.float32([kp_left[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-    
-    # Compute homography using RANSAC
+    # Compute homography with RANSAC (same logic as ORB versions)
     print("\nComputing homography with RANSAC...")
     H, mask, inlier_count = compute_homography(kp_left, kp_right, good_matches, ransac_threshold=5.0)
     
@@ -394,46 +426,32 @@ def main():
     
     print(f"Homography matrix:\n{H}")
     
-    # Warp the second (right) image onto the first (left) image's plane
+    # Warp and compose images (same logic as ORB versions)
     print("\nWarping and compositing images...")
-    h_left, w_left = left.shape[:2]
     h_right, w_right = right.shape[:2]
+    canvas_w = left.shape[1] + w_right
+    canvas_h = max(left.shape[0], right.shape[0])
     
-    # Create panoramic canvas large enough for both images
-    canvas_w = w_left + w_right
-    canvas_h = max(h_left, h_right)
-    
-    # Warp the right image
-    warped_right = cv2.warpPerspective(right, H, (canvas_w, canvas_h))
-    
-    # Create final panoramic canvas
-    # Copy the first (left) image into the canvas
-    panorama = warped_right.copy()
-    
-    # Overlay the warped second image to complete the panorama
-    # (Left image takes precedence in its region)
-    panorama[0:h_left, 0:w_left] = left
-    
-    # Optional: Apply blending in overlap region
+    warped = cv2.warpPerspective(right, H, (canvas_w, canvas_h))
     result = warp_and_compose(left, right, H, blend=True)
     
-    # Auto-crop black borders
+    # Auto-crop black borders (same logic as ORB versions)
     print("\nAuto-cropping black borders...")
     cropped = auto_crop(result)
     
-    # Save the final stitched panoramic image
-    output_path = "panorama_sift_flann.png"
+    # Save final result
+    output_path = os.path.join(output_dir, "panorama_result_sift.jpg")
     cv2.imwrite(output_path, cropped)
-    print(f"\nFinal panoramic image saved to {output_path}")
+    print(f"\nPanorama saved to {output_path}")
     
-    # Save all visualizations as separate PNG files (same format as other configurations)
+    # Save visualizations as separate PNG files (same as ORB versions)
     print("\nSaving visualizations as separate PNG files...")
-    save_visualizations(left, right, kp_left, kp_right, good_matches, warped_right, result, cropped)
+    save_visualizations(left, right, kp_left, kp_right, good_matches, warped, result, cropped, output_dir)
     
-    print("\nSIFT + FLANN panorama stitching completed successfully!")
+    print("\nPanorama stitching completed successfully!")
     print("\nSummary:")
-    print(f"  - Feature detector: SIFT")
-    print(f"  - Matcher: FLANN with KD-tree (algorithm=1, trees=5)")
+    print(f"  - Feature detector: SIFT (vs ORB in other versions)")
+    print(f"  - Matcher: BFMatcher with L2 norm")
     print(f"  - Keypoints detected: Left={len(kp_left)}, Right={len(kp_right)}")
     print(f"  - Matches found: {len(good_matches)}")
     print(f"  - Inliers: {inlier_count}")
@@ -441,4 +459,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
