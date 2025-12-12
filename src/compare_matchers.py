@@ -1,15 +1,3 @@
-"""
-Algorithm Comparison Script for Panorama Stitching
-==================================================
-This script compares four panorama stitching algorithms:
-1. ORB + BFMatcher
-2. ORB + FLANN (LSH)
-3. SIFT + BFMatcher
-4. SIFT + FLANN (KD-tree)
-
-It measures timing, collects metrics, and generates comparison visualizations.
-"""
-
 import cv2
 import numpy as np
 import time
@@ -19,21 +7,9 @@ import os
 import sys
 from pathlib import Path
 
-# --------------------------------------------------------------------
-# Project paths based on current layout:
-# STITCHVISION/
-#   original_images/src_left.jpg, src_right.jpg
-#   results/
-#   src/
-#     compare_matchers.py
-#     stitch_orb_bf.py
-#     stitch_orb_flann_lsh.py
-#     stitch_sift_bf.py
-#     stitch_sift_flann.py
-# --------------------------------------------------------------------
 THIS_FILE = Path(__file__).resolve()
-SRC_DIR = THIS_FILE.parent                  # .../STITCHVISION/src
-PROJECT_ROOT = SRC_DIR.parent               # .../STITCHVISION
+SRC_DIR = THIS_FILE.parent
+PROJECT_ROOT = SRC_DIR.parent
 
 ORIG_IMG_DIR = PROJECT_ROOT / "original_images"
 RESULTS_DIR = PROJECT_ROOT / "results"
@@ -42,13 +18,10 @@ DEFAULT_IMG1 = ORIG_IMG_DIR / "src_left.jpg"
 DEFAULT_IMG2 = ORIG_IMG_DIR / "src_right.jpg"
 DEFAULT_OUTPUT_DIR = RESULTS_DIR
 
-# Make sure results directory exists
 os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
 
-# src directory is already on sys.path when running this script, but we ensure it:
 sys.path.insert(0, str(SRC_DIR))
 
-# Import functions from existing scripts (all in src/)
 import stitch_orb_bf as orb_bf_module
 import stitch_orb_flann_lsh as orb_flann_module
 import stitch_sift_bf as sift_bf_module
@@ -56,16 +29,12 @@ import stitch_sift_flann as sift_flann_module
 
 
 def run_orb_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
-    """
-    Run ORB + BFMatcher algorithm.
-    """
     start_time = time.perf_counter()
 
-    # Feature detection
     feat_start = time.perf_counter()
     kp_left, des_left = orb_bf_module.detect_features(left, nfeatures=nfeatures)
     kp_right, des_right = orb_bf_module.detect_features(right, nfeatures=nfeatures)
-    feat_time = (time.perf_counter() - feat_start) * 1000  # ms
+    feat_time = (time.perf_counter() - feat_start) * 1000
 
     if des_left is None or des_right is None:
         return None
@@ -73,10 +42,8 @@ def run_orb_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
     num_kp1 = len(kp_left)
     num_kp2 = len(kp_right)
 
-    # Matching
     match_start = time.perf_counter()
 
-    # Get knn matches count before filtering
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
     try:
         knn_matches = bf.knnMatch(des_left, des_right, k=2)
@@ -90,11 +57,10 @@ def run_orb_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
         ratio_threshold=ratio_threshold,
         min_matches=10,
     )
-    match_time = (time.perf_counter() - match_start) * 1000  # ms
+    match_time = (time.perf_counter() - match_start) * 1000
 
     num_good_matches = len(good_matches)
 
-    # Homography computation
     H, mask, inlier_count = orb_bf_module.compute_homography(
         kp_left, kp_right, good_matches, ransac_threshold=5.0
     )
@@ -105,18 +71,14 @@ def run_orb_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
     num_inliers = inlier_count
     inlier_ratio = num_inliers / num_good_matches if num_good_matches > 0 else 0.0
 
-    # Warp and compose
     result = orb_bf_module.warp_and_compose(left, right, H, blend=True)
-
-    # Auto-crop
     cropped = orb_bf_module.auto_crop(result)
 
-    # Create match visualization
     matches_vis = orb_bf_module.draw_matches(
         left, kp_left, right, kp_right, good_matches, max_matches=50
     )
 
-    total_time = (time.perf_counter() - start_time) * 1000  # ms
+    total_time = (time.perf_counter() - start_time) * 1000
 
     return {
         "name": "ORB+BF",
@@ -135,16 +97,12 @@ def run_orb_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
 
 
 def run_orb_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
-    """
-    Run ORB + FLANN (LSH) algorithm.
-    """
     start_time = time.perf_counter()
 
-    # Feature detection
     feat_start = time.perf_counter()
     kp_left, des_left = orb_flann_module.detect_orb(left, nfeatures=nfeatures)
     kp_right, des_right = orb_flann_module.detect_orb(right, nfeatures=nfeatures)
-    feat_time = (time.perf_counter() - feat_start) * 1000  # ms
+    feat_time = (time.perf_counter() - feat_start) * 1000
 
     if des_left is None or des_right is None:
         return None
@@ -152,10 +110,8 @@ def run_orb_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
     num_kp1 = len(kp_left)
     num_kp2 = len(kp_right)
 
-    # Matching
     match_start = time.perf_counter()
 
-    # Get knn matches count before filtering
     FLANN_INDEX_LSH = 6
     index_params = dict(
         algorithm=FLANN_INDEX_LSH,
@@ -177,11 +133,10 @@ def run_orb_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
         ratio_threshold=ratio_threshold,
         min_matches=10,
     )
-    match_time = (time.perf_counter() - match_start) * 1000  # ms
+    match_time = (time.perf_counter() - match_start) * 1000
 
     num_good_matches = len(good_matches)
 
-    # Homography computation
     H, mask, inlier_count = orb_flann_module.compute_homography(
         kp_left, kp_right, good_matches, ransac_threshold=5.0
     )
@@ -192,18 +147,14 @@ def run_orb_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
     num_inliers = inlier_count
     inlier_ratio = num_inliers / num_good_matches if num_good_matches > 0 else 0.0
 
-    # Warp and compose
     result = orb_flann_module.warp_and_compose(left, right, H, blend=True)
-
-    # Auto-crop
     cropped = orb_flann_module.auto_crop(result)
 
-    # Create match visualization
     matches_vis = orb_flann_module.draw_matches(
         left, kp_left, right, kp_right, good_matches, max_matches=50
     )
 
-    total_time = (time.perf_counter() - start_time) * 1000  # ms
+    total_time = (time.perf_counter() - start_time) * 1000
 
     return {
         "name": "ORB+FLANN",
@@ -222,16 +173,12 @@ def run_orb_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
 
 
 def run_sift_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
-    """
-    Run SIFT + BFMatcher algorithm.
-    """
     start_time = time.perf_counter()
 
-    # Feature detection
     feat_start = time.perf_counter()
     kp_left, des_left = sift_bf_module.detect_sift_features(left, nfeatures=nfeatures)
     kp_right, des_right = sift_bf_module.detect_sift_features(right, nfeatures=nfeatures)
-    feat_time = (time.perf_counter() - feat_start) * 1000  # ms
+    feat_time = (time.perf_counter() - feat_start) * 1000
 
     if des_left is None or des_right is None:
         return None
@@ -239,17 +186,15 @@ def run_sift_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
     num_kp1 = len(kp_left)
     num_kp2 = len(kp_right)
 
-    # Matching
     match_start = time.perf_counter()
     good_matches, knn_matches = sift_bf_module.match_features_bf(
         des_left, des_right, ratio_threshold=ratio_threshold
     )
-    match_time = (time.perf_counter() - match_start) * 1000  # ms
+    match_time = (time.perf_counter() - match_start) * 1000
 
     num_good_matches = len(good_matches)
     num_matches = len(knn_matches)
 
-    # Homography computation
     H, mask, inlier_count = sift_bf_module.compute_homography(
         kp_left, kp_right, good_matches, ransac_threshold=5.0
     )
@@ -260,18 +205,14 @@ def run_sift_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
     num_inliers = inlier_count
     inlier_ratio = num_inliers / num_good_matches if num_good_matches > 0 else 0.0
 
-    # Warp and compose
     result = sift_bf_module.warp_and_compose(left, right, H, blend=True)
-
-    # Auto-crop
     cropped = sift_bf_module.auto_crop(result)
 
-    # Create match visualization
     matches_vis = sift_bf_module.draw_matches_simple(
         left, kp_left, right, kp_right, good_matches, max_matches=50
     )
 
-    total_time = (time.perf_counter() - start_time) * 1000  # ms
+    total_time = (time.perf_counter() - start_time) * 1000
 
     return {
         "name": "SIFT+BF",
@@ -290,12 +231,8 @@ def run_sift_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
 
 
 def run_sift_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
-    """
-    Run SIFT + FLANN (KD-tree) algorithm.
-    """
     start_time = time.perf_counter()
 
-    # Feature detection
     feat_start = time.perf_counter()
     kp_left, des_left = sift_flann_module.detect_sift_features(
         left, nfeatures=nfeatures
@@ -303,7 +240,7 @@ def run_sift_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
     kp_right, des_right = sift_flann_module.detect_sift_features(
         right, nfeatures=nfeatures
     )
-    feat_time = (time.perf_counter() - feat_start) * 1000  # ms
+    feat_time = (time.perf_counter() - feat_start) * 1000
 
     if des_left is None or des_right is None:
         return None
@@ -311,17 +248,15 @@ def run_sift_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
     num_kp1 = len(kp_left)
     num_kp2 = len(kp_right)
 
-    # Matching
     match_start = time.perf_counter()
     good_matches, knn_matches = sift_flann_module.match_features_flann(
         des_left, des_right, ratio_threshold=ratio_threshold
     )
-    match_time = (time.perf_counter() - match_start) * 1000  # ms
+    match_time = (time.perf_counter() - match_start) * 1000
 
     num_good_matches = len(good_matches)
     num_matches = len(knn_matches)
 
-    # Homography computation
     H, mask, inlier_count = sift_flann_module.compute_homography(
         kp_left, kp_right, good_matches, ransac_threshold=5.0
     )
@@ -332,18 +267,14 @@ def run_sift_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
     num_inliers = inlier_count
     inlier_ratio = num_inliers / num_good_matches if num_good_matches > 0 else 0.0
 
-    # Warp and compose
     result = sift_flann_module.warp_and_compose(left, right, H, blend=True)
-
-    # Auto-crop
     cropped = sift_flann_module.auto_crop(result)
 
-    # Create match visualization
     matches_vis = sift_flann_module.draw_matches_visualization(
         left, kp_left, right, kp_right, good_matches, max_matches=50
     )
 
-    total_time = (time.perf_counter() - start_time) * 1000  # ms
+    total_time = (time.perf_counter() - start_time) * 1000
 
     return {
         "name": "SIFT+FLANN",
@@ -362,9 +293,6 @@ def run_sift_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
 
 
 def save_results_csv(results, filename="results_comparison.csv"):
-    """
-    Save comparison results to CSV file.
-    """
     with open(filename, "w", newline="") as csvfile:
         fieldnames = [
             "algorithm",
@@ -400,20 +328,15 @@ def save_results_csv(results, filename="results_comparison.csv"):
 
 
 def print_comparison_table(results):
-    """
-    Print a formatted comparison table to console.
-    """
     print("\n" + "=" * 120)
     print("=== Algorithm Comparison (ORB+BF, ORB+FLANN, SIFT+BF, SIFT+FLANN) ===")
     print("=" * 120)
 
-    # Header
     header = f"{'Algorithm':<15} {'total_ms':<12} {'kp1':<8} {'kp2':<8} {'matches':<10} "
     header += f"{'good_matches':<15} {'inliers':<10} {'inlier_ratio':<15}"
     print(header)
     print("-" * 120)
 
-    # Data rows
     for result in results:
         if result is not None:
             row = f"{result['name']:<15} "
@@ -435,17 +358,12 @@ def print_comparison_table(results):
 
 
 def create_comparison_image(results, output_path="pano_comparison_all.png"):
-    """
-    Create a combined comparison image with all panoramas side by side.
-    """
-    # Filter out None results
     valid_results = [r for r in results if r is not None and r.get("pano") is not None]
 
     if len(valid_results) == 0:
         print("Warning: No valid panoramas to create comparison image.")
         return
 
-    # Resize all panoramas to same height for comparison
     target_height = 400
     resized_panos = []
 
@@ -457,11 +375,9 @@ def create_comparison_image(results, output_path="pano_comparison_all.png"):
         resized = cv2.resize(pano, (new_width, target_height))
         resized_panos.append((resized, result["name"]))
 
-    # Concatenate horizontally
     if len(resized_panos) > 0:
         combined = np.hstack([pano for pano, _ in resized_panos])
 
-        # Add text labels
         current_x = 0
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.8
@@ -499,9 +415,6 @@ def create_comparison_image(results, output_path="pano_comparison_all.png"):
 
 
 def print_summary(results):
-    """
-    Print textual summary of results.
-    """
     print("\n" + "=" * 120)
     print("SUMMARY")
     print("=" * 120)
@@ -512,21 +425,18 @@ def print_summary(results):
         print("No algorithms completed successfully.")
         return
 
-    # Find fastest
     fastest = min(valid_results, key=lambda x: x.get("total_time_ms", float("inf")))
     print(
         f"Fastest algorithm: {fastest['name']} "
         f"({fastest.get('total_time_ms', 0):.2f} ms)"
     )
 
-    # Find most matches
     most_matches = max(valid_results, key=lambda x: x.get("num_good_matches", 0))
     print(
         f"Most good matches: {most_matches['name']} "
         f"({most_matches.get('num_good_matches', 0)} matches)"
     )
 
-    # Find highest inlier ratio
     highest_inlier = max(valid_results, key=lambda x: x.get("inlier_ratio", 0))
     print(
         f"Highest inlier ratio: {highest_inlier['name']} "
@@ -540,7 +450,6 @@ def print_summary(results):
         good_matches = result.get("num_good_matches", 0)
         inlier_ratio = result.get("inlier_ratio", 0)
 
-        # Determine characteristics
         if total_ms < 1000:
             speed_desc = "fast"
         elif total_ms < 3000:
@@ -570,9 +479,6 @@ def print_summary(results):
 
 
 def main():
-    """
-    Main function to run comparison of all algorithms.
-    """
     parser = argparse.ArgumentParser(description="Compare panorama stitching algorithms")
     parser.add_argument(
         "--img1",
@@ -601,13 +507,11 @@ def main():
 
     args = parser.parse_args()
 
-    # Normalize paths
     img1_path = Path(args.img1)
     img2_path = Path(args.img2)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load images
     print("Loading images...")
     left = cv2.imread(str(img1_path))
     right = cv2.imread(str(img2_path))
@@ -623,14 +527,12 @@ def main():
     print(f"Left image shape: {left.shape}")
     print(f"Right image shape: {right.shape}")
 
-    # Run all algorithms
     print("\n" + "=" * 120)
     print("Running algorithms...")
     print("=" * 120)
 
     results = []
 
-    # ORB + BF
     print("\n[1/4] Running ORB + BFMatcher...")
     try:
         result = run_orb_bf(left, right)
@@ -646,7 +548,6 @@ def main():
         print(f"  ✗ Error: {e}")
         results.append(None)
 
-    # ORB + FLANN
     print("\n[2/4] Running ORB + FLANN...")
     try:
         result = run_orb_flann(left, right)
@@ -662,7 +563,6 @@ def main():
         print(f"  ✗ Error: {e}")
         results.append(None)
 
-    # SIFT + BF
     print("\n[3/4] Running SIFT + BFMatcher...")
     try:
         result = run_sift_bf(left, right)
@@ -678,7 +578,6 @@ def main():
         print(f"  ✗ Error: {e}")
         results.append(None)
 
-    # SIFT + FLANN
     print("\n[4/4] Running SIFT + FLANN...")
     try:
         result = run_sift_flann(left, right)
@@ -694,19 +593,14 @@ def main():
         print(f"  ✗ Error: {e}")
         results.append(None)
 
-    # Save CSV
     csv_path = output_dir / "results_comparison2.csv"
     save_results_csv(results, str(csv_path))
     print(f"\nMetrics saved to: {csv_path}")
 
-    # Create comparison image
     comparison_path = output_dir / "pano_comparison_all.png"
     create_comparison_image(results, str(comparison_path))
 
-    # Print comparison table
     print_comparison_table(results)
-
-    # Print summary
     print_summary(results)
 
     print("\n" + "=" * 120)
