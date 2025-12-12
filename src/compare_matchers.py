@@ -19,13 +19,36 @@ import os
 import sys
 from pathlib import Path
 
-# Import functions from existing scripts
-# Note: We'll import the modules and use their functions directly
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'ORB_+_BF'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'ORB_+_FLANN'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'SIFT_+_BF'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'SIFT_+_FLANN'))
+# --------------------------------------------------------------------
+# Project paths based on current layout:
+# STITCHVISION/
+#   original_images/src_left.jpg, src_right.jpg
+#   results/
+#   src/
+#     compare_matchers.py
+#     stitch_orb_bf.py
+#     stitch_orb_flann_lsh.py
+#     stitch_sift_bf.py
+#     stitch_sift_flann.py
+# --------------------------------------------------------------------
+THIS_FILE = Path(__file__).resolve()
+SRC_DIR = THIS_FILE.parent                  # .../STITCHVISION/src
+PROJECT_ROOT = SRC_DIR.parent               # .../STITCHVISION
 
+ORIG_IMG_DIR = PROJECT_ROOT / "original_images"
+RESULTS_DIR = PROJECT_ROOT / "results"
+
+DEFAULT_IMG1 = ORIG_IMG_DIR / "src_left.jpg"
+DEFAULT_IMG2 = ORIG_IMG_DIR / "src_right.jpg"
+DEFAULT_OUTPUT_DIR = RESULTS_DIR
+
+# Make sure results directory exists
+os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
+
+# src directory is already on sys.path when running this script, but we ensure it:
+sys.path.insert(0, str(SRC_DIR))
+
+# Import functions from existing scripts (all in src/)
 import stitch_orb_bf as orb_bf_module
 import stitch_orb_flann_lsh as orb_flann_module
 import stitch_sift_bf as sift_bf_module
@@ -35,72 +58,66 @@ import stitch_sift_flann as sift_flann_module
 def run_orb_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
     """
     Run ORB + BFMatcher algorithm.
-    
-    Args:
-        left: Left image (numpy array)
-        right: Right image (numpy array)
-        nfeatures: Number of features to detect
-        ratio_threshold: Lowe's ratio test threshold
-        
-    Returns:
-        result_dict: Dictionary with metrics and results
     """
     start_time = time.perf_counter()
-    
+
     # Feature detection
     feat_start = time.perf_counter()
     kp_left, des_left = orb_bf_module.detect_features(left, nfeatures=nfeatures)
     kp_right, des_right = orb_bf_module.detect_features(right, nfeatures=nfeatures)
     feat_time = (time.perf_counter() - feat_start) * 1000  # ms
-    
+
     if des_left is None or des_right is None:
         return None
-    
+
     num_kp1 = len(kp_left)
     num_kp2 = len(kp_right)
-    
+
     # Matching
     match_start = time.perf_counter()
-    
+
     # Get knn matches count before filtering
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
     try:
         knn_matches = bf.knnMatch(des_left, des_right, k=2)
         num_matches = len(knn_matches)
-    except:
+    except Exception:
         num_matches = 0
-    
-    good_matches = orb_bf_module.match_features(des_left, des_right, 
-                                                  ratio_threshold=ratio_threshold, 
-                                                  min_matches=10)
+
+    good_matches = orb_bf_module.match_features(
+        des_left,
+        des_right,
+        ratio_threshold=ratio_threshold,
+        min_matches=10,
+    )
     match_time = (time.perf_counter() - match_start) * 1000  # ms
-    
+
     num_good_matches = len(good_matches)
-    
+
     # Homography computation
     H, mask, inlier_count = orb_bf_module.compute_homography(
         kp_left, kp_right, good_matches, ransac_threshold=5.0
     )
-    
+
     if H is None:
         return None
-    
+
     num_inliers = inlier_count
     inlier_ratio = num_inliers / num_good_matches if num_good_matches > 0 else 0.0
-    
+
     # Warp and compose
     result = orb_bf_module.warp_and_compose(left, right, H, blend=True)
-    
+
     # Auto-crop
     cropped = orb_bf_module.auto_crop(result)
-    
+
     # Create match visualization
     matches_vis = orb_bf_module.draw_matches(
         left, kp_left, right, kp_right, good_matches, max_matches=50
     )
-    
+
     total_time = (time.perf_counter() - start_time) * 1000  # ms
-    
+
     return {
         "name": "ORB+BF",
         "pano": cropped,
@@ -120,75 +137,74 @@ def run_orb_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
 def run_orb_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
     """
     Run ORB + FLANN (LSH) algorithm.
-    
-    Args:
-        left: Left image (numpy array)
-        right: Right image (numpy array)
-        nfeatures: Number of features to detect
-        ratio_threshold: Lowe's ratio test threshold
-        
-    Returns:
-        result_dict: Dictionary with metrics and results
     """
     start_time = time.perf_counter()
-    
+
     # Feature detection
     feat_start = time.perf_counter()
     kp_left, des_left = orb_flann_module.detect_orb(left, nfeatures=nfeatures)
     kp_right, des_right = orb_flann_module.detect_orb(right, nfeatures=nfeatures)
     feat_time = (time.perf_counter() - feat_start) * 1000  # ms
-    
+
     if des_left is None or des_right is None:
         return None
-    
+
     num_kp1 = len(kp_left)
     num_kp2 = len(kp_right)
-    
+
     # Matching
     match_start = time.perf_counter()
-    
+
     # Get knn matches count before filtering
     FLANN_INDEX_LSH = 6
-    index_params = dict(algorithm=FLANN_INDEX_LSH, table_number=12, key_size=20, multi_probe_level=2)
+    index_params = dict(
+        algorithm=FLANN_INDEX_LSH,
+        table_number=12,
+        key_size=20,
+        multi_probe_level=2,
+    )
     search_params = dict(checks=50)
     flann = cv2.FlannBasedMatcher(index_params, search_params)
     try:
         knn_matches = flann.knnMatch(des_left, des_right, k=2)
         num_matches = len(knn_matches)
-    except:
+    except Exception:
         num_matches = 0
-    
-    good_matches = orb_flann_module.match_flann_lsh(des_left, des_right, 
-                                                      ratio_threshold=ratio_threshold,
-                                                      min_matches=10)
+
+    good_matches = orb_flann_module.match_flann_lsh(
+        des_left,
+        des_right,
+        ratio_threshold=ratio_threshold,
+        min_matches=10,
+    )
     match_time = (time.perf_counter() - match_start) * 1000  # ms
-    
+
     num_good_matches = len(good_matches)
-    
+
     # Homography computation
     H, mask, inlier_count = orb_flann_module.compute_homography(
         kp_left, kp_right, good_matches, ransac_threshold=5.0
     )
-    
+
     if H is None:
         return None
-    
+
     num_inliers = inlier_count
     inlier_ratio = num_inliers / num_good_matches if num_good_matches > 0 else 0.0
-    
+
     # Warp and compose
     result = orb_flann_module.warp_and_compose(left, right, H, blend=True)
-    
+
     # Auto-crop
     cropped = orb_flann_module.auto_crop(result)
-    
+
     # Create match visualization
     matches_vis = orb_flann_module.draw_matches(
         left, kp_left, right, kp_right, good_matches, max_matches=50
     )
-    
+
     total_time = (time.perf_counter() - start_time) * 1000  # ms
-    
+
     return {
         "name": "ORB+FLANN",
         "pano": cropped,
@@ -208,64 +224,55 @@ def run_orb_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
 def run_sift_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
     """
     Run SIFT + BFMatcher algorithm.
-    
-    Args:
-        left: Left image (numpy array)
-        right: Right image (numpy array)
-        nfeatures: Number of features to detect
-        ratio_threshold: Lowe's ratio test threshold
-        
-    Returns:
-        result_dict: Dictionary with metrics and results
     """
     start_time = time.perf_counter()
-    
+
     # Feature detection
     feat_start = time.perf_counter()
     kp_left, des_left = sift_bf_module.detect_sift_features(left, nfeatures=nfeatures)
     kp_right, des_right = sift_bf_module.detect_sift_features(right, nfeatures=nfeatures)
     feat_time = (time.perf_counter() - feat_start) * 1000  # ms
-    
+
     if des_left is None or des_right is None:
         return None
-    
+
     num_kp1 = len(kp_left)
     num_kp2 = len(kp_right)
-    
+
     # Matching
     match_start = time.perf_counter()
     good_matches, knn_matches = sift_bf_module.match_features_bf(
         des_left, des_right, ratio_threshold=ratio_threshold
     )
     match_time = (time.perf_counter() - match_start) * 1000  # ms
-    
+
     num_good_matches = len(good_matches)
     num_matches = len(knn_matches)
-    
+
     # Homography computation
     H, mask, inlier_count = sift_bf_module.compute_homography(
         kp_left, kp_right, good_matches, ransac_threshold=5.0
     )
-    
+
     if H is None:
         return None
-    
+
     num_inliers = inlier_count
     inlier_ratio = num_inliers / num_good_matches if num_good_matches > 0 else 0.0
-    
+
     # Warp and compose
     result = sift_bf_module.warp_and_compose(left, right, H, blend=True)
-    
+
     # Auto-crop
     cropped = sift_bf_module.auto_crop(result)
-    
+
     # Create match visualization
     matches_vis = sift_bf_module.draw_matches_simple(
         left, kp_left, right, kp_right, good_matches, max_matches=50
     )
-    
+
     total_time = (time.perf_counter() - start_time) * 1000  # ms
-    
+
     return {
         "name": "SIFT+BF",
         "pano": cropped,
@@ -285,64 +292,59 @@ def run_sift_bf(left, right, nfeatures=4000, ratio_threshold=0.75):
 def run_sift_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
     """
     Run SIFT + FLANN (KD-tree) algorithm.
-    
-    Args:
-        left: Left image (numpy array)
-        right: Right image (numpy array)
-        nfeatures: Number of features to detect
-        ratio_threshold: Lowe's ratio test threshold
-        
-    Returns:
-        result_dict: Dictionary with metrics and results
     """
     start_time = time.perf_counter()
-    
+
     # Feature detection
     feat_start = time.perf_counter()
-    kp_left, des_left = sift_flann_module.detect_sift_features(left, nfeatures=nfeatures)
-    kp_right, des_right = sift_flann_module.detect_sift_features(right, nfeatures=nfeatures)
+    kp_left, des_left = sift_flann_module.detect_sift_features(
+        left, nfeatures=nfeatures
+    )
+    kp_right, des_right = sift_flann_module.detect_sift_features(
+        right, nfeatures=nfeatures
+    )
     feat_time = (time.perf_counter() - feat_start) * 1000  # ms
-    
+
     if des_left is None or des_right is None:
         return None
-    
+
     num_kp1 = len(kp_left)
     num_kp2 = len(kp_right)
-    
+
     # Matching
     match_start = time.perf_counter()
     good_matches, knn_matches = sift_flann_module.match_features_flann(
         des_left, des_right, ratio_threshold=ratio_threshold
     )
     match_time = (time.perf_counter() - match_start) * 1000  # ms
-    
+
     num_good_matches = len(good_matches)
     num_matches = len(knn_matches)
-    
+
     # Homography computation
     H, mask, inlier_count = sift_flann_module.compute_homography(
         kp_left, kp_right, good_matches, ransac_threshold=5.0
     )
-    
+
     if H is None:
         return None
-    
+
     num_inliers = inlier_count
     inlier_ratio = num_inliers / num_good_matches if num_good_matches > 0 else 0.0
-    
+
     # Warp and compose
     result = sift_flann_module.warp_and_compose(left, right, H, blend=True)
-    
+
     # Auto-crop
     cropped = sift_flann_module.auto_crop(result)
-    
+
     # Create match visualization
     matches_vis = sift_flann_module.draw_matches_visualization(
         left, kp_left, right, kp_right, good_matches, max_matches=50
     )
-    
+
     total_time = (time.perf_counter() - start_time) * 1000  # ms
-    
+
     return {
         "name": "SIFT+FLANN",
         "pano": cropped,
@@ -362,51 +364,55 @@ def run_sift_flann(left, right, nfeatures=4000, ratio_threshold=0.75):
 def save_results_csv(results, filename="results_comparison.csv"):
     """
     Save comparison results to CSV file.
-    
-    Args:
-        results: List of result dictionaries
-        filename: Output CSV filename
     """
-    with open(filename, 'w', newline='') as csvfile:
-        fieldnames = ['algorithm', 'total_ms', 'feature_ms', 'match_ms', 
-                     'num_kp1', 'num_kp2', 'num_matches', 'num_good_matches', 
-                     'num_inliers', 'inlier_ratio']
+    with open(filename, "w", newline="") as csvfile:
+        fieldnames = [
+            "algorithm",
+            "total_ms",
+            "feature_ms",
+            "match_ms",
+            "num_kp1",
+            "num_kp2",
+            "num_matches",
+            "num_good_matches",
+            "num_inliers",
+            "inlier_ratio",
+        ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        
+
         writer.writeheader()
         for result in results:
             if result is not None:
-                writer.writerow({
-                    'algorithm': result['name'],
-                    'total_ms': result.get('total_time_ms', ''),
-                    'feature_ms': result.get('feature_time_ms', ''),
-                    'match_ms': result.get('match_time_ms', ''),
-                    'num_kp1': result.get('num_kp1', ''),
-                    'num_kp2': result.get('num_kp2', ''),
-                    'num_matches': result.get('num_matches', ''),
-                    'num_good_matches': result.get('num_good_matches', ''),
-                    'num_inliers': result.get('num_inliers', ''),
-                    'inlier_ratio': result.get('inlier_ratio', ''),
-                })
+                writer.writerow(
+                    {
+                        "algorithm": result["name"],
+                        "total_ms": result.get("total_time_ms", ""),
+                        "feature_ms": result.get("feature_time_ms", ""),
+                        "match_ms": result.get("match_time_ms", ""),
+                        "num_kp1": result.get("num_kp1", ""),
+                        "num_kp2": result.get("num_kp2", ""),
+                        "num_matches": result.get("num_matches", ""),
+                        "num_good_matches": result.get("num_good_matches", ""),
+                        "num_inliers": result.get("num_inliers", ""),
+                        "inlier_ratio": result.get("inlier_ratio", ""),
+                    }
+                )
 
 
 def print_comparison_table(results):
     """
     Print a formatted comparison table to console.
-    
-    Args:
-        results: List of result dictionaries
     """
-    print("\n" + "="*120)
+    print("\n" + "=" * 120)
     print("=== Algorithm Comparison (ORB+BF, ORB+FLANN, SIFT+BF, SIFT+FLANN) ===")
-    print("="*120)
-    
+    print("=" * 120)
+
     # Header
     header = f"{'Algorithm':<15} {'total_ms':<12} {'kp1':<8} {'kp2':<8} {'matches':<10} "
     header += f"{'good_matches':<15} {'inliers':<10} {'inlier_ratio':<15}"
     print(header)
-    print("-"*120)
-    
+    print("-" * 120)
+
     # Data rows
     for result in results:
         if result is not None:
@@ -420,42 +426,41 @@ def print_comparison_table(results):
             row += f"{result.get('inlier_ratio', 0):>13.4f}"
             print(row)
         else:
-            print(f"{'FAILED':<15} {'N/A':<12} {'N/A':<8} {'N/A':<8} {'N/A':<10} {'N/A':<15} {'N/A':<10} {'N/A':<15}")
-    
-    print("="*120)
+            print(
+                f"{'FAILED':<15} {'N/A':<12} {'N/A':<8} {'N/A':<8} "
+                f"{'N/A':<10} {'N/A':<15} {'N/A':<10} {'N/A':<15}"
+            )
+
+    print("=" * 120)
 
 
 def create_comparison_image(results, output_path="pano_comparison_all.png"):
     """
     Create a combined comparison image with all panoramas side by side.
-    
-    Args:
-        results: List of result dictionaries
-        output_path: Output image path
     """
     # Filter out None results
-    valid_results = [r for r in results if r is not None and r.get('pano') is not None]
-    
+    valid_results = [r for r in results if r is not None and r.get("pano") is not None]
+
     if len(valid_results) == 0:
         print("Warning: No valid panoramas to create comparison image.")
         return
-    
+
     # Resize all panoramas to same height for comparison
     target_height = 400
     resized_panos = []
-    
+
     for result in valid_results:
-        pano = result['pano']
+        pano = result["pano"]
         h, w = pano.shape[:2]
         aspect = w / h
         new_width = int(target_height * aspect)
         resized = cv2.resize(pano, (new_width, target_height))
-        resized_panos.append((resized, result['name']))
-    
+        resized_panos.append((resized, result["name"]))
+
     # Concatenate horizontally
     if len(resized_panos) > 0:
         combined = np.hstack([pano for pano, _ in resized_panos])
-        
+
         # Add text labels
         current_x = 0
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -463,26 +468,32 @@ def create_comparison_image(results, output_path="pano_comparison_all.png"):
         thickness = 2
         color = (255, 255, 255)
         bg_color = (0, 0, 0)
-        
+
         for pano, name in resized_panos:
-            # Get text size
             (text_width, text_height), baseline = cv2.getTextSize(
                 name, font, font_scale, thickness
             )
-            
-            # Draw background rectangle
-            cv2.rectangle(combined, 
-                         (current_x + 10, 10), 
-                         (current_x + text_width + 20, text_height + baseline + 20),
-                         bg_color, -1)
-            
-            # Draw text
-            cv2.putText(combined, name, 
-                       (current_x + 15, text_height + 15),
-                       font, font_scale, color, thickness)
-            
+
+            cv2.rectangle(
+                combined,
+                (current_x + 10, 10),
+                (current_x + text_width + 20, text_height + baseline + 20),
+                bg_color,
+                -1,
+            )
+
+            cv2.putText(
+                combined,
+                name,
+                (current_x + 15, text_height + 15),
+                font,
+                font_scale,
+                color,
+                thickness,
+            )
+
             current_x += pano.shape[1]
-        
+
         cv2.imwrite(output_path, combined)
         print(f"\nCombined comparison image saved to: {output_path}")
 
@@ -490,93 +501,143 @@ def create_comparison_image(results, output_path="pano_comparison_all.png"):
 def print_summary(results):
     """
     Print textual summary of results.
-    
-    Args:
-        results: List of result dictionaries
     """
-    print("\n" + "="*120)
+    print("\n" + "=" * 120)
     print("SUMMARY")
-    print("="*120)
-    
+    print("=" * 120)
+
     valid_results = [r for r in results if r is not None]
-    
+
     if len(valid_results) == 0:
         print("No algorithms completed successfully.")
         return
-    
+
     # Find fastest
-    fastest = min(valid_results, key=lambda x: x.get('total_time_ms', float('inf')))
-    print(f"Fastest algorithm: {fastest['name']} ({fastest.get('total_time_ms', 0):.2f} ms)")
-    
+    fastest = min(valid_results, key=lambda x: x.get("total_time_ms", float("inf")))
+    print(
+        f"Fastest algorithm: {fastest['name']} "
+        f"({fastest.get('total_time_ms', 0):.2f} ms)"
+    )
+
     # Find most matches
-    most_matches = max(valid_results, key=lambda x: x.get('num_good_matches', 0))
-    print(f"Most good matches: {most_matches['name']} ({most_matches.get('num_good_matches', 0)} matches)")
-    
+    most_matches = max(valid_results, key=lambda x: x.get("num_good_matches", 0))
+    print(
+        f"Most good matches: {most_matches['name']} "
+        f"({most_matches.get('num_good_matches', 0)} matches)"
+    )
+
     # Find highest inlier ratio
-    highest_inlier = max(valid_results, key=lambda x: x.get('inlier_ratio', 0))
-    print(f"Highest inlier ratio: {highest_inlier['name']} ({highest_inlier.get('inlier_ratio', 0):.4f})")
-    
+    highest_inlier = max(valid_results, key=lambda x: x.get("inlier_ratio", 0))
+    print(
+        f"Highest inlier ratio: {highest_inlier['name']} "
+        f"({highest_inlier.get('inlier_ratio', 0):.4f})"
+    )
+
     print("\nDetailed observations:")
     for result in valid_results:
-        name = result['name']
-        total_ms = result.get('total_time_ms', 0)
-        good_matches = result.get('num_good_matches', 0)
-        inlier_ratio = result.get('inlier_ratio', 0)
-        
+        name = result["name"]
+        total_ms = result.get("total_time_ms", 0)
+        good_matches = result.get("num_good_matches", 0)
+        inlier_ratio = result.get("inlier_ratio", 0)
+
         # Determine characteristics
-        speed_desc = "fast" if total_ms < 1000 else "moderate" if total_ms < 3000 else "slow"
-        match_desc = "many" if good_matches > 100 else "moderate" if good_matches > 50 else "few"
-        inlier_desc = "high" if inlier_ratio > 0.7 else "moderate" if inlier_ratio > 0.5 else "low"
-        
-        print(f"  - {name}: {speed_desc} ({total_ms:.2f} ms), {match_desc} good matches ({good_matches}), "
-              f"{inlier_desc} inlier ratio ({inlier_ratio:.4f})")
+        if total_ms < 1000:
+            speed_desc = "fast"
+        elif total_ms < 3000:
+            speed_desc = "moderate"
+        else:
+            speed_desc = "slow"
+
+        if good_matches > 100:
+            match_desc = "many"
+        elif good_matches > 50:
+            match_desc = "moderate"
+        else:
+            match_desc = "few"
+
+        if inlier_ratio > 0.7:
+            inlier_desc = "high"
+        elif inlier_ratio > 0.5:
+            inlier_desc = "moderate"
+        else:
+            inlier_desc = "low"
+
+        print(
+            f"  - {name}: {speed_desc} ({total_ms:.2f} ms), "
+            f"{match_desc} good matches ({good_matches}), "
+            f"{inlier_desc} inlier ratio ({inlier_ratio:.4f})"
+        )
 
 
 def main():
     """
     Main function to run comparison of all algorithms.
     """
-    parser = argparse.ArgumentParser(description='Compare panorama stitching algorithms')
-    parser.add_argument('--img1', type=str, required=True, 
-                       help='Path to left image (first image)')
-    parser.add_argument('--img2', type=str, required=True,
-                       help='Path to right image (second image)')
-    parser.add_argument('--output-dir', type=str, default='.',
-                       help='Output directory for results (default: current directory)')
-    
+    parser = argparse.ArgumentParser(description="Compare panorama stitching algorithms")
+    parser.add_argument(
+        "--img1",
+        type=str,
+        default=str(DEFAULT_IMG1),
+        help=(
+            "Path to left image (first image). "
+            "Default: original_images/src_left.jpg relative to project root."
+        ),
+    )
+    parser.add_argument(
+        "--img2",
+        type=str,
+        default=str(DEFAULT_IMG2),
+        help=(
+            "Path to right image (second image). "
+            "Default: original_images/src_right.jpg relative to project root."
+        ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Output directory for results (default: top-level 'results' folder).",
+    )
+
     args = parser.parse_args()
-    
+
+    # Normalize paths
+    img1_path = Path(args.img1)
+    img2_path = Path(args.img2)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     # Load images
     print("Loading images...")
-    left = cv2.imread(args.img1)
-    right = cv2.imread(args.img2)
-    
+    left = cv2.imread(str(img1_path))
+    right = cv2.imread(str(img2_path))
+
     if left is None:
-        print(f"Error: Could not load {args.img1}")
+        print(f"Error: Could not load {img1_path}")
         sys.exit(1)
-    
+
     if right is None:
-        print(f"Error: Could not load {args.img2}")
+        print(f"Error: Could not load {img2_path}")
         sys.exit(1)
-    
+
     print(f"Left image shape: {left.shape}")
     print(f"Right image shape: {right.shape}")
-    
+
     # Run all algorithms
-    print("\n" + "="*120)
+    print("\n" + "=" * 120)
     print("Running algorithms...")
-    print("="*120)
-    
+    print("=" * 120)
+
     results = []
-    
+
     # ORB + BF
     print("\n[1/4] Running ORB + BFMatcher...")
     try:
         result = run_orb_bf(left, right)
         if result:
             results.append(result)
-            cv2.imwrite(os.path.join(args.output_dir, "pano_orb_bf.png"), result['pano'])
-            cv2.imwrite(os.path.join(args.output_dir, "matches_orb_bf.png"), result['match_vis'])
+            cv2.imwrite(str(output_dir / "pano_orb_bf.png"), result["pano"])
+            cv2.imwrite(str(output_dir / "matches_orb_bf.png"), result["match_vis"])
             print(f"  ✓ Completed: {result.get('total_time_ms', 0):.2f} ms")
         else:
             results.append(None)
@@ -584,15 +645,15 @@ def main():
     except Exception as e:
         print(f"  ✗ Error: {e}")
         results.append(None)
-    
+
     # ORB + FLANN
     print("\n[2/4] Running ORB + FLANN...")
     try:
         result = run_orb_flann(left, right)
         if result:
             results.append(result)
-            cv2.imwrite(os.path.join(args.output_dir, "pano_orb_flann.png"), result['pano'])
-            cv2.imwrite(os.path.join(args.output_dir, "matches_orb_flann.png"), result['match_vis'])
+            cv2.imwrite(str(output_dir / "pano_orb_flann.png"), result["pano"])
+            cv2.imwrite(str(output_dir / "matches_orb_flann.png"), result["match_vis"])
             print(f"  ✓ Completed: {result.get('total_time_ms', 0):.2f} ms")
         else:
             results.append(None)
@@ -600,15 +661,15 @@ def main():
     except Exception as e:
         print(f"  ✗ Error: {e}")
         results.append(None)
-    
+
     # SIFT + BF
     print("\n[3/4] Running SIFT + BFMatcher...")
     try:
         result = run_sift_bf(left, right)
         if result:
             results.append(result)
-            cv2.imwrite(os.path.join(args.output_dir, "pano_sift_bf.png"), result['pano'])
-            cv2.imwrite(os.path.join(args.output_dir, "matches_sift_bf.png"), result['match_vis'])
+            cv2.imwrite(str(output_dir / "pano_sift_bf.png"), result["pano"])
+            cv2.imwrite(str(output_dir / "matches_sift_bf.png"), result["match_vis"])
             print(f"  ✓ Completed: {result.get('total_time_ms', 0):.2f} ms")
         else:
             results.append(None)
@@ -616,15 +677,15 @@ def main():
     except Exception as e:
         print(f"  ✗ Error: {e}")
         results.append(None)
-    
+
     # SIFT + FLANN
     print("\n[4/4] Running SIFT + FLANN...")
     try:
         result = run_sift_flann(left, right)
         if result:
             results.append(result)
-            cv2.imwrite(os.path.join(args.output_dir, "pano_sift_flann.png"), result['pano'])
-            cv2.imwrite(os.path.join(args.output_dir, "matches_sift_flann.png"), result['match_vis'])
+            cv2.imwrite(str(output_dir / "pano_sift_flann.png"), result["pano"])
+            cv2.imwrite(str(output_dir / "matches_sift_flann.png"), result["match_vis"])
             print(f"  ✓ Completed: {result.get('total_time_ms', 0):.2f} ms")
         else:
             results.append(None)
@@ -632,27 +693,26 @@ def main():
     except Exception as e:
         print(f"  ✗ Error: {e}")
         results.append(None)
-    
+
     # Save CSV
-    csv_path = os.path.join(args.output_dir, "results_comparison.csv")
-    save_results_csv(results, csv_path)
+    csv_path = output_dir / "results_comparison2.csv"
+    save_results_csv(results, str(csv_path))
     print(f"\nMetrics saved to: {csv_path}")
-    
+
     # Create comparison image
-    comparison_path = os.path.join(args.output_dir, "pano_comparison_all.png")
-    create_comparison_image(results, comparison_path)
-    
+    comparison_path = output_dir / "pano_comparison_all.png"
+    create_comparison_image(results, str(comparison_path))
+
     # Print comparison table
     print_comparison_table(results)
-    
+
     # Print summary
     print_summary(results)
-    
-    print("\n" + "="*120)
+
+    print("\n" + "=" * 120)
     print("Comparison complete!")
-    print("="*120)
+    print("=" * 120)
 
 
 if __name__ == "__main__":
     main()
-

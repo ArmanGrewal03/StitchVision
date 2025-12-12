@@ -17,7 +17,3 @@ build/
 *.log
 *.tmp
 
-
-*.jpg
-*.png
-*.jpeg
