@@ -14,7 +14,7 @@ It stitches two images together using different feature detectors and matchers s
 6. Crop black borders  
 7. Save results  
 
-## Files (Very Simple)
+## Files Overview
 
 ### `stitch_orb_bf.py`
 - ORB features  
